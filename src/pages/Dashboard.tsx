@@ -1,13 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { 
-  TrendingUp, 
-  TrendingDown, 
-  DollarSign, 
+import {
+  TrendingUp,
   Activity,
   LogOut,
   Wallet,
@@ -61,65 +58,96 @@ interface SymbolSummary {
   totalProfit: number;
 }
 
+const REFRESH_INTERVAL = 15000; // Auto-refresh every 15 seconds
+
 const Dashboard = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
 
-  // Demo data - replace with actual API calls
-  const [accountInfo, setAccountInfo] = useState<AccountInfo>({
-    balance: 10000.00,
-    equity: 10250.50,
-    margin: 1500.00,
-    freeMargin: 8750.50,
-    marginLevel: 683.37,
-    profit: 250.50,
-    currency: 'USD'
-  });
+  const [accountInfo, setAccountInfo] = useState<AccountInfo | null>(null);
+  const [positions, setPositions] = useState<Position[]>([]);
+  const [historyTrades, setHistoryTrades] = useState<HistoryTrade[]>([]);
 
-  const [positions, setPositions] = useState<Position[]>([
-    {
-      ticket: 123456,
-      symbol: 'XAUUSD',
-      type: 'BUY',
-      volume: 0.10,
-      openPrice: 2025.50,
-      currentPrice: 2028.75,
-      profit: 32.50,
-      swap: -5.20,
-      commission: -10.00,
-      openTime: '2024-01-15 10:30:00'
-    },
-    {
-      ticket: 123457,
-      symbol: 'EURUSD',
-      type: 'SELL',
-      volume: 0.50,
-      openPrice: 1.0850,
-      currentPrice: 1.0845,
-      profit: 25.00,
-      swap: -2.50,
-      commission: -5.00,
-      openTime: '2024-01-15 14:15:00'
+  const handleLogout = useCallback(() => {
+    localStorage.removeItem('mtAuth');
+    navigate('/');
+  }, [navigate]);
+
+  const fetchData = useCallback(async (isInitialLoad = false) => {
+    if (!isInitialLoad) {
+        setIsRefreshing(true);
     }
-  ]);
+    
+    try {
+      const auth = localStorage.getItem('mtAuth');
+      const token = auth ? JSON.parse(auth).token : null;
+      if (!token) {
+        handleLogout();
+        return;
+      }
+      const headers = { 'Authorization': `Bearer ${token}` };
 
-  const [historyTrades, setHistoryTrades] = useState<HistoryTrade[]>([
-    {
-      ticket: 123450,
-      symbol: 'GBPUSD',
-      type: 'BUY',
-      volume: 0.30,
-      openPrice: 1.2650,
-      closePrice: 1.2680,
-      profit: 90.00,
-      openTime: '2024-01-14 09:00:00',
-      closeTime: '2024-01-14 15:30:00'
+      const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const toDate = new Date().toISOString();
+
+      const [accountInfoRes, positionsRes, historyRes] = await Promise.all([
+        fetch('/api/account/info', { headers }),
+        fetch('/api/positions', { headers }),
+        fetch(`/api/history/trades?from_date=${fromDate}&to_date=${toDate}`, { headers })
+      ]);
+
+      if ([accountInfoRes, positionsRes, historyRes].some(res => res.status === 401)) {
+          toast({ title: "Your session has expired", description: "Please log in again.", variant: "destructive" });
+          handleLogout();
+          return;
+      }
+      
+      if (!accountInfoRes.ok || !positionsRes.ok || !historyRes.ok) {
+        throw new Error('Failed to fetch data');
+      }
+
+      const accountInfoData = await accountInfoRes.json();
+      const positionsData = await positionsRes.json();
+      const historyData = await historyRes.json();
+
+      setAccountInfo(accountInfoData.data);
+      setPositions(positionsData.data);
+      setHistoryTrades(historyData.data);
+      setLastUpdate(new Date());
+
+    } catch (error) {
+      console.error("Fetch data error:", error);
+      if (isInitialLoad) {
+        toast({
+          title: "Error fetching data",
+          description: "Could not connect to the server.",
+          variant: "destructive"
+        });
+      }
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
     }
-  ]);
+  }, [navigate, toast, handleLogout]);
 
-  // Calculate symbol summaries
+  // Effect for initial data load
+  useEffect(() => {
+    fetchData(true);
+  }, [fetchData]);
+
+  // Effect for auto-refreshing data every 15 seconds
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      fetchData();
+    }, REFRESH_INTERVAL);
+
+    // Cleanup interval on component unmount
+    return () => clearInterval(intervalId);
+  }, [fetchData]);
+  
   const symbolSummaries = (): SymbolSummary[] => {
     const summaries: { [key: string]: SymbolSummary } = {};
     
@@ -145,41 +173,17 @@ const Dashboard = () => {
     }));
   };
 
-  const handleRefresh = async () => {
-    setIsLoading(true);
-    try {
-      // TODO: Replace with actual API calls
-      // await Promise.all([
-      //   fetch('/api/account/info'),
-      //   fetch('/api/positions'),
-      //   fetch('/api/history')
-      // ]);
-      
-      // Simulate API calls
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      setLastUpdate(new Date());
-      
-      toast({
-        title: "به‌روزرسانی موفق",
-        description: "اطلاعات به‌روزرسانی شد"
-      });
-    } catch (error) {
-      toast({
-        title: "خطا در به‌روزرسانی",
-        description: "لطفاً دوباره تلاش کنید",
-        variant: "destructive"
-      });
-    } finally {
-      setIsLoading(false);
-    }
+  const handleRefresh = () => {
+    fetchData().then(() => {
+        toast({
+            title: "Refresh successful",
+            description: "Data has been updated successfully."
+        });
+    });
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('mtAuth');
-    navigate('/');
-  };
-
-  const formatCurrency = (amount: number, currency: string = 'USD') => {
+  const formatCurrency = (amount: number | undefined, currency: string = 'USD') => {
+    if (typeof amount !== 'number') return '...';
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: currency
@@ -189,32 +193,35 @@ const Dashboard = () => {
   const formatVolume = (volume: number) => {
     return volume.toFixed(2);
   };
+  
+  if (isLoading) {
+      return (
+        <div className="min-h-screen flex items-center justify-center">
+            <RefreshCw className="h-8 w-8 animate-spin mr-4" />
+            Loading account data...
+        </div>
+      );
+  }
 
-  useEffect(() => {
-    // Check authentication
-    const auth = localStorage.getItem('mtAuth');
-    if (!auth || !JSON.parse(auth).isAuthenticated) {
-      navigate('/');
-      return;
-    }
-
-    // Set up real-time updates (replace with WebSocket)
-    const interval = setInterval(() => {
-      // TODO: Replace with WebSocket connection
-      setLastUpdate(new Date());
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, [navigate]);
+  if (!accountInfo) {
+      return (
+          <div className="min-h-screen flex items-center justify-center text-center p-4">
+              <div>
+                <h2 className="text-2xl font-bold text-destructive mb-4">Error Loading Data</h2>
+                <p className="text-muted-foreground mb-6">Could not connect to the server. Please ensure the Python server and MetaTrader terminal are running.</p>
+                <Button onClick={() => fetchData(true)}>Try Again</Button>
+              </div>
+          </div>
+      )
+  }
 
   return (
     <div className="min-h-screen bg-background p-4 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">داشبورد MetaTrader</h1>
+          <h1 className="text-3xl font-bold text-foreground">MetaTrader Dashboard</h1>
           <p className="text-muted-foreground">
-            آخرین به‌روزرسانی: {lastUpdate.toLocaleTimeString('fa-IR')}
+            Last updated: {lastUpdate.toLocaleTimeString('fa-IR')}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -222,23 +229,23 @@ const Dashboard = () => {
             variant="outline" 
             size="sm" 
             onClick={handleRefresh}
-            disabled={isLoading}
+            disabled={isRefreshing}
           >
-            <RefreshCw className={`h-4 w-4 ml-2 ${isLoading ? 'animate-spin' : ''}`} />
-            به‌روزرسانی
+            <RefreshCw className={`h-4 w-4 ml-2 ${isRefreshing ? 'animate-spin' : ''}`} />
+            Refresh
           </Button>
           <Button variant="outline" size="sm" onClick={handleLogout}>
             <LogOut className="h-4 w-4 ml-2" />
-            خروج
+            Logout
           </Button>
         </div>
       </div>
 
-      {/* Account Overview */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Cards remain the same */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">بالانس</CardTitle>
+            <CardTitle className="text-sm font-medium">Balance</CardTitle>
             <Wallet className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -257,7 +264,7 @@ const Dashboard = () => {
             <div className="text-2xl font-bold">
               {formatCurrency(accountInfo.equity, accountInfo.currency)}
             </div>
-            <p className={`text-xs ${accountInfo.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+            <p className={`text-xs ${accountInfo.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
               {accountInfo.profit >= 0 ? '+' : ''}{formatCurrency(accountInfo.profit, accountInfo.currency)}
             </p>
           </CardContent>
@@ -265,7 +272,7 @@ const Dashboard = () => {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">مارجین</CardTitle>
+            <CardTitle className="text-sm font-medium">Margin</CardTitle>
             <PieChart className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -273,14 +280,14 @@ const Dashboard = () => {
               {formatCurrency(accountInfo.margin, accountInfo.currency)}
             </div>
             <p className="text-xs text-muted-foreground">
-              آزاد: {formatCurrency(accountInfo.freeMargin, accountInfo.currency)}
+              Free: {formatCurrency(accountInfo.freeMargin, accountInfo.currency)}
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">سطح مارجین</CardTitle>
+            <CardTitle className="text-sm font-medium">Margin Level</CardTitle>
             <BarChart3 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
@@ -291,22 +298,21 @@ const Dashboard = () => {
               variant={accountInfo.marginLevel > 200 ? "default" : "destructive"}
               className="mt-1"
             >
-              {accountInfo.marginLevel > 200 ? 'ایمن' : 'خطرناک'}
+              {accountInfo.marginLevel > 200 ? 'Safe' : 'Danger'}
             </Badge>
           </CardContent>
         </Card>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Positions Summary */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Activity className="h-5 w-5" />
-              خلاصه پوزیشن‌ها
+              Positions Summary
             </CardTitle>
             <CardDescription>
-              خلاصه‌ای از پوزیشن‌های باز به تفکیک نماد
+              Summary of open positions by symbol
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -318,13 +324,13 @@ const Dashboard = () => {
                     <Badge 
                       variant={summary.netType === 'BUY' ? "default" : summary.netType === 'SELL' ? "destructive" : "secondary"}
                     >
-                      {summary.netType === 'BUY' ? 'خرید' : summary.netType === 'SELL' ? 'فروش' : 'خنثی'}
+                      {summary.netType}
                     </Badge>
                     <span className="text-sm text-muted-foreground">
-                      {formatVolume(summary.netVolume)} لات
+                      {formatVolume(summary.netVolume)} lot
                     </span>
                   </div>
-                  <div className={`font-bold ${summary.totalProfit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  <div className={`font-bold ${summary.totalProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                     {summary.totalProfit >= 0 ? '+' : ''}{formatCurrency(summary.totalProfit)}
                   </div>
                 </div>
@@ -333,40 +339,39 @@ const Dashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Open Positions */}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <TrendingUp className="h-5 w-5" />
-              پوزیشن‌های باز
+              Open Positions
             </CardTitle>
             <CardDescription>
-              لیست کامل معاملات فعال
+              Complete list of active trades
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2">
+            <div className="space-y-2 max-h-96 overflow-y-auto">
               {positions.map((position) => (
                 <div key={position.ticket} className="border rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="font-semibold">{position.symbol}</span>
                       <Badge variant={position.type === 'BUY' ? "default" : "destructive"}>
-                        {position.type === 'BUY' ? 'خرید' : 'فروش'}
+                        {position.type}
                       </Badge>
                       <span className="text-sm text-muted-foreground">
-                        {formatVolume(position.volume)} لات
+                        {formatVolume(position.volume)} lot
                       </span>
                     </div>
-                    <div className={`font-bold ${position.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                    <div className={`font-bold ${position.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                       {position.profit >= 0 ? '+' : ''}{formatCurrency(position.profit)}
                     </div>
                   </div>
                   <div className="text-xs text-muted-foreground grid grid-cols-2 gap-2">
-                    <span>قیمت باز: {position.openPrice}</span>
-                    <span>قیمت فعلی: {position.currentPrice}</span>
-                    <span>تیکت: #{position.ticket}</span>
-                    <span>زمان: {position.openTime}</span>
+                    <span>Open Price: {position.openPrice}</span>
+                    <span>Current Price: {position.currentPrice}</span>
+                    <span>Ticket: #{position.ticket}</span>
+                    <span>Time: {new Date(position.openTime).toLocaleString('fa-IR')}</span>
                   </div>
                 </div>
               ))}
@@ -375,39 +380,38 @@ const Dashboard = () => {
         </Card>
       </div>
 
-      {/* Trading History */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <History className="h-5 w-5" />
-            تاریخچه معاملات
+            Trading History
           </CardTitle>
           <CardDescription>
-            معاملات بسته شده اخیر
+            Closed trades from the last 7 days
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-2">
+          <div className="space-y-2 max-h-96 overflow-y-auto">
             {historyTrades.map((trade) => (
               <div key={trade.ticket} className="border rounded-lg p-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold">{trade.symbol}</span>
                     <Badge variant={trade.type === 'BUY' ? "default" : "destructive"}>
-                      {trade.type === 'BUY' ? 'خرید' : 'فروش'}
+                      {trade.type}
                     </Badge>
                     <span className="text-sm text-muted-foreground">
-                      {formatVolume(trade.volume)} لات
+                      {formatVolume(trade.volume)} lot
                     </span>
                   </div>
-                  <div className={`font-bold ${trade.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                  <div className={`font-bold ${trade.profit >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                     {trade.profit >= 0 ? '+' : ''}{formatCurrency(trade.profit)}
                   </div>
                 </div>
                 <div className="text-xs text-muted-foreground grid grid-cols-3 gap-2 mt-2">
-                  <span>باز: {trade.openPrice}</span>
-                  <span>بسته: {trade.closePrice}</span>
-                  <span>تیکت: #{trade.ticket}</span>
+                  <span>Open: {trade.openPrice}</span>
+                  <span>Close: {trade.closePrice}</span>
+                  <span>Ticket: #{trade.ticket}</span>
                 </div>
               </div>
             ))}
